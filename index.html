@@ -1,0 +1,1172 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GuGem.vn</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+   
+    <!-- PWA / ADD TO HOME SCREEN CONFIG -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <link rel="apple-touch-icon" href="/icons/icon-192x192.png">
+   
+    <!-- FIREBASE IMPORTS -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, setPersistence, browserLocalPersistence, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, runTransaction, updateDoc, collection, getDocs, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+       
+        // --- GLOBAL SETUP ---
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+
+        if (Object.keys(firebaseConfig).length === 0) {
+            console.error("Lỗi: Không tìm thấy cấu hình Firebase.");
+        }
+
+
+        const app = initializeApp(firebaseConfig);
+        window.db = getFirestore(app);
+        window.auth = getAuth(app);
+        window.appId = appId;
+       
+        setLogLevel('Debug');
+
+
+        async function authenticate() {
+            try {
+                await setPersistence(window.auth, browserLocalPersistence);
+               
+                if (initialAuthToken) {
+                    await signInWithCustomToken(window.auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(window.auth);
+                }
+                console.log("Đăng nhập Firebase thành công.");
+                window.initAppLogic();
+            } catch (error) {
+                console.error("Lỗi xác thực Firebase:", error);
+                document.getElementById('loginMessage').textContent = `Lỗi: Không thể kết nối đến máy chủ. ${error.message}`;
+            }
+        }
+       
+        window.authenticate = authenticate;
+        window.firebaseSignOut = async () => {
+            if (window.auth) {
+                await signOut(window.auth);
+            }
+        };
+    </script>
+
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #1E1E1E;
+        }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #2A2A2A; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb { background: #4B5563; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #6B7280; }
+
+
+        .modal { z-index: 100; }
+        .modal-content { box-shadow: 0 10px 25px rgba(255, 255, 255, 0.1); }
+       
+        .tab-active {
+            background-color: #4f46e5; /* Indigo 600 */
+            color: white;
+            border-color: #a5b4fc; /* Indigo 300 */
+        }
+        .tab-inactive {
+            background-color: #374151; /* Gray 700 */
+            color: #d1d5db; /* Gray 300 */
+            border-color: #4b5563; /* Gray 600 */
+        }
+
+
+    </style>
+</head>
+<body class="min-h-screen p-2">
+
+
+    <!-- Custom Modal for Alerts/Confirmations -->
+    <div id="customModal" class="modal fixed inset-0 flex items-center justify-center hidden bg-black bg-opacity-70">
+        <div class="modal-content bg-gray-800 p-6 rounded-xl max-w-sm w-full border border-gray-700">
+            <h3 id="modalTitle" class="text-xl font-bold text-yellow-400 mb-4">Thông báo</h3>
+            <p id="modalMessage" class="text-gray-200 mb-6"></p>
+            <div id="modalActions" class="flex justify-end space-x-3">
+                <button id="modalConfirmBtn" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-500 transition hidden">Xác nhận</button>
+                <button id="modalCloseBtn" class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-500 transition">Đóng</button>
+            </div>
+        </div>
+    </div>
+
+
+
+
+    <!-- Main Application Container -->
+    <div id="app" class="max-w-4xl mx-auto">
+       
+        <!-- Login Screen (Displayed by default) -->
+        <div id="loginScreen" class="flex flex-col items-center justify-center min-h-[80vh] bg-gray-900 p-8 rounded-xl shadow-2xl">
+            <h1 class="text-3xl font-bold text-yellow-400 mb-6">GuGem.vn - Mã Truy Cập</h1>
+            <p class="text-gray-400 mb-4 text-center">Vui lòng nhập Mã Truy Cập duy nhất của bạn để bắt đầu.</p>
+            <input type="text" id="accessCodeInput" placeholder="Nhập mã truy cập..."
+                   class="w-full max-w-sm px-4 py-3 mb-4 text-lg text-white bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500">
+            <button id="loginBtn"
+                    class="w-full max-w-sm px-4 py-3 rounded-lg font-bold text-lg transition duration-150
+                            bg-green-600 text-white hover:bg-green-500 disabled:opacity-50"
+                    onclick="handleLogin()">
+                Xác Nhận & Bắt Đầu
+            </button>
+            <p id="loginMessage" class="mt-4 text-sm text-red-400"></p>
+        </div>
+
+
+        <!-- Music Player Container (Parent of all modules) -->
+        <div id="playerContainer" class="hidden">
+           
+            <!-- Header/Status -->
+            <div class="bg-gray-800 p-4 rounded-xl shadow-lg mb-4">
+                <div class="flex flex-col sm:flex-row justify-between items-center">
+                   
+                    <div class="text-white text-lg font-semibold mb-3 sm:mb-0 flex items-center">
+                        Trạng thái Module <span id="currentModuleNameDisplay" class="ml-2 font-bold text-yellow-400">Đang tải...</span>
+                        <div id="currentModuleLoadingIndicator" class="ml-2 h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin hidden"></div>
+                    </div>
+
+
+                    <div class="flex flex-wrap items-center space-x-2">
+                        <span id="userInfo" class="text-sm text-gray-400 self-center mb-2 sm:mb-0"></span>
+
+
+                        <button id="adminBtn"
+                                class="px-2 py-1 rounded-lg font-bold text-xs transition duration-150 bg-blue-600 text-white hover:bg-blue-500 shadow-md hidden"
+                                onclick="showAdminView()">
+                            Quản Trị
+                        </button>
+                       
+                        <button id="resetBtn"
+                                class="px-2 py-1 rounded-lg font-bold text-xs transition duration-150
+                                        bg-orange-600 text-white hover:bg-orange-500 shadow-md"
+                                onclick="handleDeviceReset(authenticatedAccessCode)">
+                            Đổi Thiết Bị
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+
+            <!-- Tab Navigation (Only visible to Admin) -->
+            <div id="moduleTabs" class="flex justify-center bg-gray-900 p-2 rounded-xl mb-4 hidden">
+                <button id="tab_A" class="tab-active px-4 py-2 mx-1 rounded-lg font-semibold text-sm transition duration-150 border" onclick="showPlayerView('A')">Ngọc (A)</button>
+                <button id="tab_B" class="tab-inactive px-4 py-2 mx-1 rounded-lg font-semibold text-sm transition duration-150 border" onclick="showPlayerView('B')">An Uống (B)</button>
+                <button id="tab_C" class="tab-inactive px-4 py-2 mx-1 rounded-lg font-semibold text-sm transition duration-150 border" onclick="showPlayerView('C')">Thời Trang (C)</button>
+                <button id="tab_D" class="tab-inactive px-4 py-2 mx-1 rounded-lg font-semibold text-sm transition duration-150 border" onclick="showPlayerView('D')">Gia Dụng (D)</button>
+            </div>
+
+
+            <!-- PLAYER CONTENT (Dynamic content loaded here based on currentModule) -->
+            <div id="playerContent" class="bg-gray-800 p-4 rounded-xl shadow-lg">
+               
+                <div class="flex justify-between items-center mb-4">
+                    <h2 id="moduleTitle" class="text-xl font-bold text-white">Module A: Ngọc (110 Tracks)</h2>
+                    <div class="flex space-x-3">
+                        <button id="randomToggleBtn"
+                                class="px-4 py-1 rounded-lg font-bold transition duration-150 shadow-md text-sm
+                                        bg-gray-600 text-white hover:bg-gray-500"
+                                onclick="window.playerInstances[currentModule].handlePlayRandomToggle()">
+                            Play Random
+                        </button>
+                       
+                        <button id="stopBtn"
+                                class="px-4 py-1 rounded-lg font-bold transition duration-150 shadow-md text-sm
+                                        bg-red-600 text-white hover:bg-red-500 disabled:opacity-50"
+                                onclick="window.playerInstances[currentModule].handleStop()"
+                                disabled>
+                            Stop
+                        </button>
+                    </div>
+                </div>
+
+
+                <div id="trackGrid" class="grid grid-cols-10 gap-1 p-2 bg-gray-900 rounded-xl">
+                    <!-- Track buttons loaded dynamically -->
+                </div>
+               
+                <div class="mt-4 p-3 bg-gray-700 rounded-xl text-xs text-gray-300">
+                    5 bài gần nhất (Không lặp): <span id="lastFiveDisplay"></span>
+                </div>
+            </div>
+
+
+        </div>
+       
+        <!-- ADMIN DASHBOARD -->
+        <div id="adminScreen" class="hidden">
+            <div class="bg-gray-800 p-4 rounded-xl shadow-lg mb-6 flex justify-between items-center">
+                <h2 class="text-2xl font-bold text-blue-400">Bảng Quản Trị Truy Cập (4 Modules)</h2>
+                <button class="px-3 py-1 rounded-lg font-bold text-xs transition duration-150 bg-gray-600 text-white hover:bg-gray-500" onclick="showPlayerView(currentModule)">
+                    &larr; Trở lại Player
+                </button>
+            </div>
+           
+            <!-- Update Admin Code Section -->
+            <div class="bg-gray-700 p-4 rounded-xl shadow-md mb-6">
+                <h3 class="text-xl font-bold text-yellow-300 mb-3">Đổi Mã Truy Cập Admin</h3>
+                <p class="text-gray-300 mb-3 text-sm">Mã hiện tại: <span id="currentAdminCodeDisplay" class="font-bold text-green-400">Đang tải...</span></p>
+                <div class="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-3">
+                    <input type="text" id="newAdminCodeInput" placeholder="Nhập mã Admin mới..."
+                           class="flex-grow px-4 py-2 text-white bg-gray-800 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500">
+                    <button id="updateAdminCodeBtn"
+                            class="px-4 py-2 rounded-lg font-bold text-sm transition duration-150
+                                    bg-red-600 text-white hover:bg-red-500 disabled:opacity-50"
+                            onclick="handleUpdateAdminCode()">
+                        Cập nhật & Đăng xuất
+                    </button>
+                </div>
+            </div>
+
+
+            <!-- Create New Code Section (Updated with 4 Modules) -->
+            <div class="bg-gray-700 p-4 rounded-xl shadow-md mb-6">
+                <h3 class="text-xl font-bold text-yellow-300 mb-3">Cấp Mã Truy Cập Thường Mới</h3>
+                <div class="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-3">
+                    <input type="text" id="newCodeInput" placeholder="Nhập mã mới (VD: USER006)"
+                           class="flex-grow px-4 py-2 text-white bg-gray-800 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500">
+                    <!-- Dropdown for module assignment -->
+                    <select id="newCodeModuleSelect" class="px-4 py-2 text-white bg-gray-800 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500">
+                        <option value="A">Module A: Ngọc (music110)</option>
+                        <option value="B">Module B: An Uống (music-anuong)</option>
+                        <option value="C">Module C: Thời Trang (music-thoitrang)</option>
+                        <option value="D">Module D: Gia Dụng (music-giadung)</option>
+                    </select>
+                    <button id="createCodeBtn"
+                            class="px-4 py-2 rounded-lg font-bold text-sm transition duration-150
+                                    bg-green-600 text-white hover:bg-green-500 disabled:opacity-50"
+                            onclick="handleCreateNewCode()">
+                        Tạo Mã & Mở Khóa
+                    </button>
+                </div>
+            </div>
+           
+            <!-- Access History Table -->
+            <p class="text-gray-400 mb-4">Các mã truy cập được sắp xếp theo thời gian đăng nhập gần nhất. Mã có màu **Đỏ** là mã có hoạt động trong 24h qua.</p>
+
+
+            <div id="adminTableContainer" class="bg-gray-900 p-4 rounded-xl overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-700">
+                    <thead class="bg-gray-700">
+                        <tr>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Mã Access</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Module</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Trạng Thái Khóa</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Đăng Nhập Cuối</th>
+                            <th scope="col" class="px-6 py-3 text-center text-xs font-medium text-gray-300 uppercase tracking-wider">Hành động</th>
+                        </tr>
+                    </thead>
+                    <tbody id="adminTableBody" class="divide-y divide-gray-800">
+                        <!-- Data rows will be injected here -->
+                    </tbody>
+                </table>
+                <p id="adminLoadingText" class="text-center text-gray-400 py-4">Đang tải dữ liệu...</p>
+            </div>
+        </div>
+
+
+    </div>
+
+
+    <!-- Hidden Audio Elements (Bip is shared) -->
+    <audio id="bipAudio" preload="auto" src="https://cdn.pixabay.com/download/audio/2021/08/04/audio_3d1a473f2b.mp3"></audio>
+    <audio id="mainAudio_A" preload="auto"></audio>
+    <audio id="mainAudio_B" preload="auto"></audio>
+    <audio id="mainAudio_C" preload="auto"></audio>
+    <audio id="mainAudio_D" preload="auto"></audio>
+
+
+    <script type="module">
+        import { doc, getDoc, setDoc, runTransaction, updateDoc, collection, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+
+        // --- GLOBAL UI UTILITIES (Replacing alert/confirm) ---
+        const MODAL = document.getElementById('customModal');
+        const MODAL_TITLE = document.getElementById('modalTitle');
+        const MODAL_MESSAGE = document.getElementById('modalMessage');
+        const MODAL_CLOSE_BTN = document.getElementById('modalCloseBtn');
+        const MODAL_CONFIRM_BTN = document.getElementById('modalConfirmBtn');
+       
+        function showModal(title, message, isConfirm = false, onConfirm = null) {
+            MODAL_TITLE.textContent = title;
+            MODAL_MESSAGE.innerHTML = message; // Use innerHTML for potential bolding
+            MODAL.classList.remove('hidden');
+
+
+            MODAL_CLOSE_BTN.onclick = () => {
+                MODAL.classList.add('hidden');
+                if (isConfirm && onConfirm) onConfirm(false);
+            };
+
+
+            if (isConfirm) {
+                MODAL_CONFIRM_BTN.classList.remove('hidden');
+                MODAL_CONFIRM_BTN.onclick = () => {
+                    MODAL.classList.add('hidden');
+                    if (onConfirm) onConfirm(true);
+                };
+            } else {
+                MODAL_CONFIRM_BTN.classList.add('hidden');
+            }
+        }
+       
+        // --- AUTHENTICATION & DEVICE LOCK LOGIC ---
+
+
+        const LOGIN_CODE_COLLECTION = 'access_codes';
+        const ADMIN_SETTINGS_REF = doc(window.db, 'artifacts', window.appId, 'public', 'data', 'admin_settings', 'master');
+        const DEFAULT_ADMIN_CODE = 'ADMIN123';
+       
+        const LOGIN_SCREEN = document.getElementById('loginScreen');
+        const PLAYER_CONTAINER = document.getElementById('playerContainer');
+        const ADMIN_SCREEN = document.getElementById('adminScreen');
+
+
+        const ACCESS_CODE_INPUT = document.getElementById('accessCodeInput');
+        const LOGIN_BTN = document.getElementById('loginBtn');
+        const LOGIN_MESSAGE = document.getElementById('loginMessage');
+        const USER_INFO_SPAN = document.getElementById('userInfo');
+        const ADMIN_BTN = document.getElementById('adminBtn');
+        const ADMIN_TABLE_BODY = document.getElementById('adminTableBody');
+        const ADMIN_LOADING_TEXT = document.getElementById('adminLoadingText');
+        const CURRENT_ADMIN_CODE_DISPLAY = document.getElementById('currentAdminCodeDisplay');
+        const NEW_ADMIN_CODE_INPUT = document.getElementById('newAdminCodeInput');
+        const UPDATE_ADMIN_CODE_BTN = document.getElementById('updateAdminCodeBtn');
+        const NEW_CODE_INPUT = document.getElementById('newCodeInput');
+        const CREATE_CODE_BTN = document.getElementById('createCodeBtn');
+        const NEW_CODE_MODULE_SELECT = document.getElementById('newCodeModuleSelect');
+
+
+        const MODULE_TABS = document.getElementById('moduleTabs');
+        const CURRENT_MODULE_NAME_DISPLAY = document.getElementById('currentModuleNameDisplay');
+        const CURRENT_MODULE_LOADING_INDICATOR = document.getElementById('currentModuleLoadingIndicator');
+        const MODULE_TITLE = document.getElementById('moduleTitle');
+        const RANDOM_TOGGLE_BTN = document.getElementById('randomToggleBtn');
+        const STOP_BTN = document.getElementById('stopBtn');
+        const TRACK_GRID = document.getElementById('trackGrid');
+        const LAST_FIVE_DISPLAY = document.getElementById('lastFiveDisplay');
+
+
+
+
+        let deviceId = localStorage.getItem('deviceId');
+        if (!deviceId) {
+            deviceId = crypto.randomUUID();
+            localStorage.setItem('deviceId', deviceId);
+        }
+       
+        window.playerInstances = {}; // Chứa các instance của MusicPlayer
+        let authenticatedAccessCode = null;
+        let isAdmin = false;
+        let currentAdminCode = null;
+        window.currentModule = null; // ID module hiện tại đang được hiển thị/điều khiển (A, B, C, D)
+
+
+        // --- CORE MODULE CONFIGURATION (Đã cập nhật theo R2 paths mới) ---
+        const TRACK_COUNT = 110;
+        const R2_BASE_URL = 'https://fb07d3a9be33adf901ea44608c62e4cf.r2.cloudflarestorage.com/';
+        const MODULE_CONFIGS = {
+            // Module A: Ngọc (music110)
+            'A': { id: 'A', name: 'Ngọc', color: 'text-yellow-400', r2Path: R2_BASE_URL + 'music110', totalTracks: TRACK_COUNT, audioId: 'mainAudio_A' },
+            // Module B: An Uống
+            'B': { id: 'B', name: 'An Uống', color: 'text-teal-400', r2Path: R2_BASE_URL + 'music-anuong', totalTracks: TRACK_COUNT, audioId: 'mainAudio_B' },
+            // Module C: Thời Trang
+            'C': { id: 'C', name: 'Thời Trang', color: 'text-purple-400', r2Path: R2_BASE_URL + 'music-thoitrang', totalTracks: TRACK_COUNT, audioId: 'mainAudio_C' },
+            // Module D: Gia Dụng
+            'D': { id: 'D', name: 'Gia Dụng', color: 'text-pink-400', r2Path: R2_BASE_URL + 'music-giadung', totalTracks: TRACK_COUNT, audioId: 'mainAudio_D' }
+        };
+        const MODULE_IDS = Object.keys(MODULE_CONFIGS);
+
+
+        /**
+         * Lấy Mã Admin hiện tại từ Firestore.
+         */
+        async function getAdminCodeFromFirestore() {
+            try {
+                const docSnap = await getDoc(ADMIN_SETTINGS_REF);
+                if (docSnap.exists()) {
+                    currentAdminCode = docSnap.data().code;
+                } else {
+                    await setDoc(ADMIN_SETTINGS_REF, { code: DEFAULT_ADMIN_CODE, updated_at: Date.now() });
+                    currentAdminCode = DEFAULT_ADMIN_CODE;
+                }
+                return currentAdminCode;
+            } catch (error) {
+                console.error("Lỗi khi tải mã Admin:", error);
+                return DEFAULT_ADMIN_CODE;
+            }
+        }
+
+
+
+
+        /**
+         * Kiểm tra và khóa Mã Truy Cập với Device ID hiện tại.
+         * TRẢ VỀ: { success: boolean, message: string, module: string | null }
+         */
+        async function checkAccessCode(code) {
+            LOGIN_BTN.disabled = true;
+            LOGIN_MESSAGE.textContent = 'Đang kiểm tra...';
+           
+            const adminCode = currentAdminCode || await getAdminCodeFromFirestore();
+
+
+            // Xử lý mã ADMIN
+            if (code === adminCode) {
+                isAdmin = true;
+                await setDoc(ADMIN_SETTINGS_REF, { last_login: Date.now() }, { merge: true });
+                return { success: true, message: `Chào mừng Admin!`, module: 'A' }; // Admin mặc định vào module A
+            }
+           
+            const codeRef = doc(window.db, 'artifacts', window.appId, 'public', 'data', LOGIN_CODE_COLLECTION, code.toUpperCase());
+           
+            try {
+                const result = await runTransaction(window.db, async (transaction) => {
+                    const codeDoc = await transaction.get(codeRef);
+                   
+                    if (!codeDoc.exists()) {
+                         return { success: false, message: `Mã ${code.toUpperCase()} không tồn tại.` };
+                    }
+                   
+                    const data = codeDoc.data();
+                    const module = data.assigned_module; // Lấy module được gán
+
+
+                    if (!module || !MODULE_IDS.includes(module)) {
+                        return { success: false, message: `Mã ${code.toUpperCase()} chưa được gán module hợp lệ. Vui lòng liên hệ Admin.` };
+                    }
+
+
+                    if (data.is_locked === true) {
+                        return { success: false, message: `Mã ${code.toUpperCase()} đang bị khóa.` };
+                    }
+
+
+                    if (!data.assigned_device_id || data.assigned_device_id === "") {
+                        // 1. Mã mới hoặc đã được Admin/User reset -> Khóa cho thiết bị này.
+                        transaction.set(codeRef, { assigned_device_id: deviceId, last_login: Date.now() }, { merge: true });
+                        return { success: true, message: `Mã ${code.toUpperCase()} đã được khóa thành công cho thiết bị này.`, module };
+                    } else {
+                        if (data.assigned_device_id === deviceId) {
+                            // 2. Mã đã khóa cho thiết bị này -> Cho phép truy cập.
+                            transaction.update(codeRef, { last_login: Date.now() });
+                            return { success: true, message: `Chào mừng trở lại! Mã ${code.toUpperCase()} hợp lệ.`, module };
+                        } else {
+                            // 3. Mã đã khóa cho thiết bị khác -> Từ chối.
+                            return { success: false, message: `Mã này đang được sử dụng trên một thiết bị khác. Vui lòng liên hệ hỗ trợ.` };
+                        }
+                    }
+                });
+
+
+                return result;
+
+
+            } catch (error) {
+                console.error("Transaction failed: ", error);
+                return { success: false, message: `Lỗi kết nối hoặc hệ thống: ${error.message}` };
+            } finally {
+                LOGIN_BTN.disabled = false;
+            }
+        }
+
+
+        async function handleLogin() {
+            const code = ACCESS_CODE_INPUT.value.trim().toUpperCase();
+            if (code.length < 4) {
+                LOGIN_MESSAGE.textContent = 'Mã truy cập phải có ít nhất 4 ký tự.';
+                return;
+            }
+
+
+            const result = await checkAccessCode(code);
+           
+            if (result.success) {
+                authenticatedAccessCode = code;
+                localStorage.setItem('authenticatedAccessCode', code);
+               
+                LOGIN_SCREEN.classList.add('hidden');
+                PLAYER_CONTAINER.classList.remove('hidden');
+
+
+                if (isAdmin) {
+                    ADMIN_BTN.classList.remove('hidden');
+                    MODULE_TABS.classList.remove('hidden');
+                    USER_INFO_SPAN.textContent = `Admin Mode`;
+                    showPlayerView('A'); // Admin mặc định vào module A
+                } else {
+                    MODULE_TABS.classList.add('hidden');
+                    ADMIN_BTN.classList.add('hidden');
+                    showPlayerView(result.module); // Hiển thị module được gán
+                    USER_INFO_SPAN.textContent = `Mã: ${code} (${MODULE_CONFIGS[result.module].name})`;
+                }
+                console.log("Đăng nhập thành công.");
+            } else {
+                LOGIN_MESSAGE.textContent = result.message;
+            }
+        }
+       
+        window.handleDeviceReset = async function (codeToReset) {
+            const confirmed = await new Promise(resolve => {
+                showModal("Xác nhận Đổi thiết bị", `Bạn có chắc chắn muốn Đăng Xuất và xóa khóa thiết bị cho mã **${codeToReset}** không? Hành động này sẽ MỞ KHÓA mã này cho thiết bị khác.`, true, resolve);
+            });
+           
+            if (!confirmed) return;
+
+
+            const codeRef = doc(window.db, 'artifacts', window.appId, 'public', 'data', LOGIN_CODE_COLLECTION, codeToReset);
+            try {
+                await updateDoc(codeRef, { assigned_device_id: "" });
+               
+                if (codeToReset === authenticatedAccessCode || isAdmin) {
+                    localStorage.removeItem('authenticatedAccessCode');
+                    if(window.currentModule) {
+                        window.playerInstances[window.currentModule].handleStop();
+                    }
+                    authenticatedAccessCode = null;
+                    isAdmin = false;
+                    showModal("Thành công", "Đã xóa khóa thiết bị! Vui lòng truy cập ứng dụng trên thiết bị mới và nhập lại mã.");
+                    window.location.reload();
+                } else {
+                    showModal("Thành công", `Đã mở khóa thiết bị cho mã ${codeToReset}.`);
+                    loadAccessCodeHistory();
+                }
+            } catch (error) {
+                console.error("Lỗi khi reset thiết bị:", error);
+                showModal("Lỗi", `Không thể reset khóa thiết bị. Vui lòng thử lại. (${error.message})`);
+            }
+        }
+       
+        window.handleCreateNewCode = async function() {
+            const newCode = NEW_CODE_INPUT.value.trim().toUpperCase();
+            const module = NEW_CODE_MODULE_SELECT.value;
+            CREATE_CODE_BTN.disabled = true;
+           
+            if (newCode.length < 4) {
+                showModal("Lỗi", "Mã truy cập phải có ít nhất 4 ký tự.");
+                CREATE_CODE_BTN.disabled = false;
+                return;
+            }
+
+
+            const codeRef = doc(window.db, 'artifacts', window.appId, 'public', 'data', LOGIN_CODE_COLLECTION, newCode);
+           
+            try {
+                const codeDoc = await getDoc(codeRef);
+                if (codeDoc.exists()) {
+                    showModal("Thất bại", `Mã ${newCode} đã tồn tại! Vui lòng chọn mã khác hoặc reset khóa thiết bị cho mã này.`);
+                    return;
+                }
+
+
+                // Tạo mã mới, chưa khóa, có gán module
+                await setDoc(codeRef, {
+                    assigned_device_id: "",
+                    assigned_module: module, // GÁN MODULE
+                    is_locked: false, // Mặc định không khóa
+                    created_at: Date.now(),
+                    last_login: null
+                });
+
+
+                showModal("Thành công", `Đã tạo mã truy cập mới: **${newCode}** và gán cho **Module ${module}: ${MODULE_CONFIGS[module].name}**.`);
+                NEW_CODE_INPUT.value = '';
+                loadAccessCodeHistory();
+
+
+            } catch (error) {
+                console.error("Lỗi khi tạo mã mới:", error);
+                showModal("Lỗi", `Không thể tạo mã mới. Vui lòng thử lại. (${error.message})`);
+            } finally {
+                CREATE_CODE_BTN.disabled = false;
+            }
+        }
+
+
+        window.handleUpdateAdminCode = async function() {
+            const newCode = NEW_ADMIN_CODE_INPUT.value.trim().toUpperCase();
+            UPDATE_ADMIN_CODE_BTN.disabled = true;
+
+
+            if (newCode.length < 6) {
+                showModal("Lỗi", "Mã Admin phải có ít nhất 6 ký tự.");
+                UPDATE_ADMIN_CODE_BTN.disabled = false;
+                return;
+            }
+           
+            const confirmed = await new Promise(resolve => {
+                showModal("Xác nhận Đổi Mã Admin", `Bạn có chắc chắn muốn đổi Mã Admin thành **${newCode}**? Bạn sẽ bị ĐĂNG XUẤT ngay lập tức.`, true, resolve);
+            });
+           
+            if (!confirmed) {
+                UPDATE_ADMIN_CODE_BTN.disabled = false;
+                return;
+            }
+           
+            try {
+                await setDoc(ADMIN_SETTINGS_REF, { code: newCode, updated_at: Date.now() }, { merge: true });
+
+
+                localStorage.removeItem('authenticatedAccessCode');
+                await window.firebaseSignOut();
+                showModal("Thành công", `Mã Admin đã được cập nhật thành **${newCode}**. Vui lòng đăng nhập lại với mã mới.`);
+                window.location.reload();
+
+
+            } catch (error) {
+                console.error("Lỗi khi cập nhật mã Admin:", error);
+                showModal("Lỗi", `Không thể cập nhật mã Admin. (${error.message})`);
+            } finally {
+                UPDATE_ADMIN_CODE_BTN.disabled = false;
+            }
+        }
+       
+        // --- ADMIN PANEL LOGIC ---
+       
+        window.showAdminView = async function() {
+            if (!isAdmin) {
+                showModal("Lỗi", "Bạn không có quyền truy cập trang Quản trị.");
+                return;
+            }
+
+
+            const adminCode = currentAdminCode || await getAdminCodeFromFirestore();
+            CURRENT_ADMIN_CODE_DISPLAY.textContent = adminCode;
+           
+            PLAYER_CONTAINER.classList.add('hidden');
+            ADMIN_SCREEN.classList.remove('hidden');
+            loadAccessCodeHistory();
+        }
+       
+        // Hàm hiển thị Player View (Hiển thị module tương ứng)
+        window.showPlayerView = function(moduleId) {
+            ADMIN_SCREEN.classList.add('hidden');
+            PLAYER_CONTAINER.classList.remove('hidden');
+           
+            const config = MODULE_CONFIGS[moduleId];
+            if (!config) {
+                console.error("Module không hợp lệ:", moduleId);
+                return;
+            }
+
+
+            // Dừng module cũ trước khi chuyển
+            if (window.currentModule && window.playerInstances[window.currentModule]) {
+                window.playerInstances[window.currentModule].handleStop();
+            }
+
+
+            window.currentModule = moduleId; // Cập nhật module hiện tại
+
+
+            // Cập nhật UI chung
+            CURRENT_MODULE_NAME_DISPLAY.textContent = `${config.name} (${config.id})`;
+            CURRENT_MODULE_NAME_DISPLAY.className = `ml-2 font-bold ${config.color}`;
+            MODULE_TITLE.textContent = `Module ${config.id}: ${config.name} (${config.totalTracks} Tracks, Folder: ${config.r2Path.split('/').pop()})`; // Chỉ hiển thị tên folder
+           
+            // Cập nhật tab active (chỉ Admin mới có)
+            if (isAdmin) {
+                 MODULE_TABS.classList.remove('hidden');
+                MODULE_IDS.forEach(id => {
+                    const tabBtn = document.getElementById(`tab_${id}`);
+                    if (id === moduleId) {
+                        tabBtn.classList.add('tab-active');
+                        tabBtn.classList.remove('tab-inactive');
+                    } else {
+                        tabBtn.classList.remove('tab-active');
+                        tabBtn.classList.add('tab-inactive');
+                    }
+                });
+            }
+
+
+
+
+            // Render/Cập nhật Player Content cho module mới
+            window.playerInstances[moduleId].renderTrackGrid(); // Luôn render lại để đảm bảo trạng thái grid đúng
+            window.playerInstances[moduleId].updateUIState(); // Cập nhật trạng thái nút Random/Stop
+            window.playerInstances[moduleId].updateLastFiveDisplay();
+        }
+
+
+        function formatTimestamp(timestamp) {
+            if (!timestamp) return '—';
+            const date = new Date(timestamp);
+            return date.toLocaleString('vi-VN');
+        }
+
+
+        async function handleToggleLock(codeId, isLocked) {
+            const confirmed = await new Promise(resolve => {
+                const action = isLocked ? 'MỞ KHÓA' : 'KHÓA';
+                const message = `Bạn có chắc chắn muốn **${action}** Mã Truy Cập **${codeId}**?`;
+                showModal("Xác nhận Khóa/Mở Khóa", message, true, resolve);
+            });
+           
+            if (!confirmed) return;
+
+
+            const codeRef = doc(window.db, 'artifacts', window.appId, 'public', 'data', LOGIN_CODE_COLLECTION, codeId);
+            try {
+                await updateDoc(codeRef, { is_locked: !isLocked });
+                showModal("Thành công", `Đã **${isLocked ? 'MỞ KHÓA' : 'KHÓA'}** mã ${codeId}.`);
+                loadAccessCodeHistory();
+            } catch (error) {
+                console.error("Lỗi khi toggle khóa:", error);
+                showModal("Lỗi", `Không thể thực hiện hành động. (${error.message})`);
+            }
+        }
+        window.handleToggleLock = handleToggleLock; // Expose to global scope for HTML buttons
+
+
+        async function loadAccessCodeHistory() {
+            ADMIN_TABLE_BODY.innerHTML = '';
+            ADMIN_LOADING_TEXT.classList.remove('hidden');
+           
+            const codesCol = collection(window.db, 'artifacts', window.appId, 'public', 'data', LOGIN_CODE_COLLECTION);
+           
+            try {
+                const snapshot = await getDocs(codesCol);
+                const codes = [];
+                snapshot.forEach(doc => {
+                    codes.push({ id: doc.id, ...doc.data() });
+                });
+
+
+                codes.sort((a, b) => (b.last_login || 0) - (a.last_login || 0));
+
+
+                const now = Date.now();
+                const oneDayAgo = now - (24 * 60 * 60 * 1000);
+
+
+                codes.forEach(code => {
+                    const lastLoginTime = code.last_login || code.created_at;
+                   
+                    let statusText = 'CHƯA KHÓA / ĐÃ RESET';
+                    let statusColor = 'text-green-400';
+                    let statusDetail = 'Sẵn sàng để đăng nhập';
+                    let isRecentActivity = false;
+
+
+                    if (code.is_locked) {
+                         statusText = 'BỊ KHÓA';
+                         statusColor = 'text-red-600';
+                         statusDetail = 'Đăng nhập bị từ chối';
+                    } else if (code.assigned_device_id && code.assigned_device_id !== "") {
+                        statusText = 'ĐÃ KHÓA THIẾT BỊ';
+                        statusColor = 'text-yellow-400';
+                        statusDetail = `ID: ${code.assigned_device_id.substring(0, 8)}...`;
+                    }
+                   
+                    if (lastLoginTime && lastLoginTime > oneDayAgo) {
+                        isRecentActivity = true;
+                        statusColor = code.is_locked ? 'text-red-500' : 'text-red-400';
+                    }
+                   
+                    if (!code.last_login && !code.is_locked) {
+                        statusText = 'CHƯA SỬ DỤNG';
+                        statusColor = 'text-blue-400';
+                    }
+                   
+                    const assignedModule = code.assigned_module;
+                    // Lấy tên folder hiển thị trong Admin Table
+                    const folderName = MODULE_CONFIGS[assignedModule] ? MODULE_CONFIGS[assignedModule].r2Path.split('/').pop() : '—';
+                    const moduleText = `${assignedModule || '—'} (${folderName})`;
+
+
+
+
+                    const row = document.createElement('tr');
+                    row.className = `border-b border-gray-700 hover:bg-gray-700 ${isRecentActivity ? 'bg-red-900 bg-opacity-30' : ''}`;
+                   
+                    row.innerHTML = `
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium ${isRecentActivity ? 'text-red-400' : 'text-white'}">
+                            ${isRecentActivity ? '&#128266; ' : ''} ${code.id}
+                        </td>
+                         <td class="px-6 py-4 whitespace-nowrap text-sm text-yellow-300">
+                            ${moduleText}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm ${statusColor}">
+                            ${statusText}
+                            <div class="text-xs text-gray-400">${statusDetail}</div>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">
+                            ${formatTimestamp(lastLoginTime)}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-center space-x-2">
+                            <button onclick="handleDeviceReset('${code.id}')"
+                                class="px-3 py-1 bg-orange-600 text-white text-xs rounded-lg hover:bg-orange-500 transition shadow-md">
+                                RESET Thiết Bị
+                            </button>
+                            <button onclick="handleToggleLock('${code.id}', ${!!code.is_locked})"
+                                class="px-3 py-1 ${code.is_locked ? 'bg-green-600' : 'bg-red-600'} text-white text-xs rounded-lg hover:opacity-80 transition shadow-md">
+                                ${code.is_locked ? 'MỞ KHÓA' : 'KHÓA'} Mã
+                            </button>
+                        </td>
+                    `;
+                    ADMIN_TABLE_BODY.appendChild(row);
+                });
+               
+                if (codes.length === 0) {
+                    ADMIN_TABLE_BODY.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-gray-400">Chưa có mã truy cập nào được sử dụng.</td></tr>';
+                }
+
+
+
+
+            } catch(e) {
+                console.error("Lỗi khi tải lịch sử truy cập:", e);
+                ADMIN_TABLE_BODY.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-red-500">Lỗi tải dữ liệu: ${e.message}</td></tr>`;
+            } finally {
+                ADMIN_LOADING_TEXT.classList.add('hidden');
+            }
+        }
+       
+        // --- MUSIC PLAYER LOGIC (REFACTORED FOR CONFIG) ---
+       
+        const BIP_SOUND_DURATION = 5;
+        const bipAudio = document.getElementById('bipAudio');
+
+
+        /**
+         * Hàm khởi tạo một trình phát nhạc độc lập (Module) dựa trên cấu hình.
+         * @param {object} config - Cấu hình module từ MODULE_CONFIGS
+         */
+        class MusicPlayer {
+            constructor(config) {
+                this.moduleId = config.id;
+                this.config = config;
+                this.TRACK_IDS = Array.from({ length: config.totalTracks }, (_, i) => i + 1);
+               
+                this.mainAudio = document.getElementById(config.audioId);
+                this.currentTrackId = null;
+                this.isPlaying = false;
+                this.isRandomMode = false;
+                this.isLoading = false;
+                this.intervalId = null;
+                this.lastFive = [];
+
+
+                this.setupEventListeners();
+                this.loadState();
+            }
+
+
+            // Load lastFive và isRandomMode từ LocalStorage
+            loadState() {
+                const state = JSON.parse(localStorage.getItem(`playerState_${this.moduleId}`)) || {};
+                this.lastFive = state.lastFive || [];
+                // Admin không tự động bật Random Mode khi load
+                if (!isAdmin) {
+                    this.isRandomMode = state.isRandomMode || false;
+                }
+            }
+
+
+            // Lưu lastFive và isRandomMode vào LocalStorage
+            saveState() {
+                localStorage.setItem(`playerState_${this.moduleId}`, JSON.stringify({
+                    lastFive: this.lastFive,
+                    isRandomMode: this.isRandomMode
+                }));
+            }
+
+
+            // Đặt sự kiện cho audio
+            setupEventListeners() {
+                this.mainAudio.onended = () => {
+                    this.handleTrackEnd();
+                };
+                this.mainAudio.onplay = () => {
+                    this.isPlaying = true;
+                    this.updateUIState();
+                };
+                this.mainAudio.onpause = () => {
+                    this.isPlaying = false;
+                    this.updateUIState();
+                };
+                this.mainAudio.onabort = this.mainAudio.onerror = this.mainAudio.onloadstart = () => {
+                    this.isLoading = false;
+                    this.updateUIState();
+                };
+            }
+
+
+            // Cập nhật trạng thái UI chung (chỉ khi module này đang được hiển thị)
+            updateUIState() {
+                if (window.currentModule !== this.moduleId) return;
+
+
+                // Cập nhật Loading Indicator & Status Text
+                CURRENT_MODULE_LOADING_INDICATOR.classList.toggle('hidden', !this.isLoading);
+               
+                const statusText = this.isPlaying
+                    ? `Đang phát: ${this.currentTrackId || 'Random'}...`
+                    : this.isLoading
+                    ? 'Đang tải...'
+                    : this.isRandomMode
+                    ? 'Chế độ Random: Đang dừng'
+                    : 'Chờ lệnh...';
+
+
+                CURRENT_MODULE_NAME_DISPLAY.textContent = `${this.config.name} (${this.moduleId}): ${statusText}`;
+               
+                // Cập nhật nút Random/Stop
+                STOP_BTN.disabled = !this.isPlaying && !this.isLoading;
+                RANDOM_TOGGLE_BTN.textContent = this.isRandomMode ? 'Stop Random' : 'Play Random';
+                RANDOM_TOGGLE_BTN.classList.toggle('bg-gray-600', !this.isRandomMode);
+                RANDOM_TOGGLE_BTN.classList.toggle('bg-indigo-600', this.isRandomMode);
+
+
+                this.renderTrackGrid(); // Tối ưu hóa: chỉ render lại grid khi cần
+            }
+
+
+            // Cập nhật danh sách 5 bài gần nhất
+            updateLastFiveDisplay() {
+                 if (window.currentModule !== this.moduleId) return;
+
+
+                LAST_FIVE_DISPLAY.textContent = this.lastFive.length > 0
+                    ? this.lastFive.join(', ')
+                    : 'Chưa có bài nào được phát.';
+            }
+
+
+            // Thêm bài hát vào danh sách 5 bài gần nhất (Không lặp)
+            addTrackToLastFive(trackId) {
+                if (!trackId) return;
+               
+                // Loại bỏ nếu bài hát đã có trong list
+                this.lastFive = this.lastFive.filter(id => id !== trackId);
+                // Thêm vào đầu list
+                this.lastFive.unshift(trackId);
+                // Cắt bớt nếu list quá 5 phần tử
+                if (this.lastFive.length > 5) {
+                    this.lastFive.pop();
+                }
+                this.saveState();
+                this.updateLastFiveDisplay();
+            }
+
+
+            // Lấy một track ngẫu nhiên, loại trừ 5 track gần nhất
+            getRandomTrackId() {
+                const availableTracks = this.TRACK_IDS.filter(id => !this.lastFive.includes(id));
+                if (availableTracks.length === 0) {
+                    // Nếu tất cả đã được phát, reset danh sách 5 bài gần nhất
+                    this.lastFive = [];
+                    this.saveState();
+                    return this.getRandomTrackId(); // Thử lại
+                }
+                const randomIndex = Math.floor(Math.random() * availableTracks.length);
+                return availableTracks[randomIndex];
+            }
+
+
+            // Xử lý khi Random Track kết thúc
+            handleTrackEnd() {
+                clearInterval(this.intervalId);
+                this.currentTrackId = null;
+                this.isPlaying = false;
+                this.updateUIState();
+               
+                if (this.isRandomMode) {
+                    // Đảm bảo có ít nhất 5 giây nghỉ giữa các bài
+                    this.playBipSound();
+                    setTimeout(() => {
+                        this.startRandomInterval(true); // Tự động phát bài tiếp theo
+                    }, BIP_SOUND_DURATION * 1000);
+                } else {
+                    this.mainAudio.removeAttribute('src');
+                    this.mainAudio.load();
+                }
+            }
+
+
+            // Phát âm thanh bip ngắn
+            playBipSound() {
+                bipAudio.play().catch(e => console.error("Lỗi phát bip:", e));
+            }
+
+
+            // Phát một track cụ thể
+            playTrack(trackId) {
+                if (this.isLoading) return; // Không làm gì nếu đang tải
+
+
+                this.isLoading = true;
+                this.currentTrackId = trackId;
+
+
+                // Sử dụng số tự nhiên không có padding (1, 2, ..., 110)
+                const trackNumber = String(trackId);
+
+
+                // Sử dụng folder R2 path đã cấu hình (Base URL + Folder Name)
+                const url = `${this.config.r2Path}/${trackNumber}.mp3`;
+
+
+                this.mainAudio.src = url;
+                this.mainAudio.play()
+                    .then(() => {
+                        this.addTrackToLastFive(trackId);
+                        this.isLoading = false;
+                        this.updateUIState();
+                    })
+                    .catch(e => {
+                        // Xử lý lỗi (ví dụ: file không tồn tại trên R2)
+                        this.isLoading = false;
+                        this.currentTrackId = null;
+                        this.mainAudio.removeAttribute('src');
+                        this.mainAudio.load();
+                        this.updateUIState();
+                        if (e.name !== "AbortError") {
+                            console.warn(`Lỗi: Không thể phát Track ${trackId} từ URL: ${url}. (Có thể file này không tồn tại)`);
+                            // Nếu đang ở chế độ Random và gặp lỗi, tự động chuyển bài
+                            if (this.isRandomMode) {
+                                this.handleTrackEnd();
+                            }
+                        }
+                    });
+
+
+                // Nếu đang ở chế độ random, xóa interval cũ (chế độ thủ công ngắt random)
+                if (this.isRandomMode) {
+                    this.isRandomMode = false;
+                    clearInterval(this.intervalId);
+                    this.saveState();
+                }
+               
+                this.updateUIState();
+            }
+
+
+            // Chạy ngẫu nhiên bài hát
+            startRandomInterval(isAuto = false) {
+                if (!isAuto) {
+                    // Dừng nếu đang ở chế độ random
+                    if (this.isRandomMode) {
+                        this.handleStop();
+                        return;
+                    }
+                    this.isRandomMode = true;
+                    this.saveState();
+                }
+
+
+                clearInterval(this.intervalId);
+               
+                const nextTrackId = this.getRandomTrackId();
+                this.playTrack(nextTrackId);
+            }
+
+
+            // Xử lý Toggle nút Random
+            handlePlayRandomToggle() {
+                if (this.isRandomMode) {
+                    this.handleStop();
+                } else {
+                    this.startRandomInterval(false);
+                }
+            }
+           
+            // Xử lý nút Stop (Dừng phát, dừng random interval)
+            handleStop() {
+                clearInterval(this.intervalId);
+                this.isRandomMode = false;
+                this.isPlaying = false;
+                this.isLoading = false;
+                this.currentTrackId = null;
+                this.mainAudio.pause();
+                this.mainAudio.removeAttribute('src');
+                this.mainAudio.load();
+                this.saveState();
+                this.updateUIState();
+            }
+
+
+            // Render lại Track Grid (Chỉ render khi module này đang active)
+            renderTrackGrid() {
+                 if (window.currentModule !== this.moduleId) return;
+                 
+                let html = '';
+                for (let i = 1; i <= this.config.totalTracks; i++) {
+                    const isPlaying = this.currentTrackId === i;
+                    const isDisabled = this.isRandomMode;
+                    const isLastFive = this.lastFive.includes(i);
+                   
+                    let bgColor = 'bg-gray-600 hover:bg-gray-500';
+                    if (isLastFive && !isPlaying) {
+                        bgColor = 'bg-gray-700 hover:bg-gray-600'; // Đã phát gần đây
+                    }
+                    if (isPlaying) {
+                        bgColor = 'bg-yellow-500 animate-pulse'; // Đang phát
+                    }
+
+
+                    html += `
+                        <button onclick="window.playerInstances['${this.moduleId}'].playTrack(${i})"
+                                class="w-full aspect-square text-xs font-bold text-white rounded-lg transition-colors duration-150 ${bgColor} ${isDisabled ? 'opacity-50 cursor-not-allowed' : ''}"
+                                ${isDisabled ? 'disabled' : ''}>
+                            ${i}
+                        </button>
+                    `;
+                }
+                TRACK_GRID.innerHTML = html;
+            }
+        }
+       
+        // --- APPLICATION INITIALIZATION ---
+
+
+        function initAppLogic() {
+            // Khởi tạo 4 instance của MusicPlayer
+            MODULE_IDS.forEach(id => {
+                window.playerInstances[id] = new MusicPlayer(MODULE_CONFIGS[id]);
+            });
+           
+            // Tải mã admin lần đầu
+            getAdminCodeFromFirestore();
+
+
+            // Kiểm tra trạng thái đăng nhập tự động
+            const savedCode = localStorage.getItem('authenticatedAccessCode');
+            if (savedCode) {
+                ACCESS_CODE_INPUT.value = savedCode;
+                handleLogin();
+            } else {
+                LOGIN_SCREEN.classList.remove('hidden');
+            }
+        }
+
+
+        window.initAppLogic = initAppLogic;
+       
+        // Bắt đầu quá trình xác thực khi Firebase đã load xong
+        window.onload = window.authenticate;
+
+
+    </script>
+</body>
+</html>
+
+
+
+
