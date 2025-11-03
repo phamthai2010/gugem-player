@@ -12,453 +12,6 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <link rel="apple-touch-icon" href="/icons/icon-192x192.png">
 
-    <!-- FIREBASE IMPORTS -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, setPersistence, browserLocalPersistence, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, runTransaction, updateDoc, collection, getDocs, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        // --- GLOBAL SETUP (Constants and Config) ---
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const ACCESS_CODE_COLLECTION_PATH = `artifacts/${appId}/public/data/access_codes`;
-        const ADMIN_CODE_PATH = `artifacts/${appId}/public/data/admin_settings/master`;
-        const MODULE_CONFIGS = {
-            'A': { label: 'Module 1', maxTracks: 20, bgColor: 'bg-indigo-600' },
-            'B': { label: 'Module 2', maxTracks: 20, bgColor: 'bg-purple-600' },
-            'C': { label: 'Module 3', maxTracks: 20, bgColor: 'bg-pink-600' },
-            'D': { label: 'Module 4', maxTracks: 20, bgColor: 'bg-red-600' },
-        };
-        const ADMIN_CODE_STORAGE_KEY = 'adminCode';
-
-        let app, db, auth;
-        let adminCode = null;
-        let currentUser;
-
-        // --- DOM Elements ---
-        const ALERT_MODAL = document.getElementById('customModal');
-        const ALERT_MESSAGE = document.getElementById('alertMessage');
-        const LOGIN_SCREEN = document.getElementById('loginScreen');
-        const APP_SCREEN = document.getElementById('appScreen');
-        const ACCESS_CODE_INPUT = document.getElementById('accessCodeInput');
-        const LOGOUT_BUTTON = document.getElementById('logoutButton');
-        const ACTIVE_USER_INFO = document.getElementById('activeUserInfo');
-        const PLAYER_CONTAINER = document.getElementById('playerContainer');
-        const ADMIN_BUTTON = document.getElementById('adminButton');
-        const ADMIN_SCREEN = document.getElementById('adminScreen');
-        const MODULE_GRID_CONTAINER = document.getElementById('moduleGridContainer');
-
-        // State for Admin Interface
-        let allAccessCodes = [];
-        let currentlyEditingCode = null;
-        let isSaving = false;
-
-        // --- UTILITY FUNCTIONS ---
-        function showAlert(message) {
-            ALERT_MESSAGE.textContent = message;
-            ALERT_MODAL.classList.remove('hidden');
-        }
-
-        function closeAlert() {
-            ALERT_MODAL.classList.add('hidden');
-        }
-        window.closeAlert = closeAlert; // Make sure closeAlert is global for the modal button
-
-        function showScreen(screen) {
-            LOGIN_SCREEN.classList.add('hidden');
-            APP_SCREEN.classList.add('hidden');
-            ADMIN_SCREEN.classList.add('hidden');
-            screen.classList.remove('hidden');
-        }
-
-        // --- FIREBASE INITIALIZATION & AUTHENTICATION ---
-
-        async function authenticate() {
-            try {
-                // Initialize Firebase
-                app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
-                setLogLevel('error'); // Use 'debug' if troubleshooting is needed
-
-                // Persist authentication state locally
-                await setPersistence(auth, browserLocalPersistence);
-
-                // Sign in using the custom token provided by Cloudflare, or anonymously as a fallback
-                if (initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                } else {
-                    await signInAnonymously(auth);
-                }
-
-                currentUser = auth.currentUser;
-                console.log(`Firebase authenticated. UID: ${currentUser ? currentUser.uid : 'N/A'}`);
-
-                // Proceed with app logic initialization
-                window.initAppLogic();
-
-            } catch (error) {
-                console.error("Firebase Auth Error:", error);
-                showAlert(`Lỗi kết nối Firebase: ${error.message}. Vui lòng kiểm tra console.`);
-            }
-        }
-        window.authenticate = authenticate;
-
-
-        // --- FIREBASE DATA FUNCTIONS ---
-
-        async function getAdminCodeFromFirestore() {
-            try {
-                const docRef = doc(db, ADMIN_CODE_PATH);
-                const docSnap = await getDoc(docRef);
-
-                if (docSnap.exists()) {
-                    adminCode = docSnap.data().code;
-                    // Store the admin code in localStorage for client-side check
-                    localStorage.setItem(ADMIN_CODE_STORAGE_KEY, adminCode);
-                    console.log("Admin code loaded successfully.");
-                } else {
-                    showAlert("Không tìm thấy mã admin trong Firestore. Vui lòng tạo Document: artifacts/gu_gem_player/public/data/admin_settings/master");
-                }
-            } catch (error) {
-                console.error("Error fetching admin code:", error);
-                showAlert(`Lỗi khi tải mã admin: ${error.message}`);
-            }
-        }
-
-        async function getAccessCode(code) {
-            const docRef = doc(db, ACCESS_CODE_COLLECTION_PATH, code.toUpperCase());
-            const docSnap = await getDoc(docRef);
-            if (!docSnap.exists()) {
-                return null;
-            }
-            return { id: docSnap.id, ...docSnap.data() };
-        }
-
-        async function updateAccessCodeLastLogin(codeId) {
-            try {
-                const docRef = doc(db, ACCESS_CODE_COLLECTION_PATH, codeId);
-                await updateDoc(docRef, { last_login: Date.now() });
-            } catch (error) {
-                console.warn("Could not update last_login timestamp:", error);
-            }
-        }
-
-        // --- LOGIN/LOGOUT LOGIC ---
-
-        async function handleLogin() {
-            const inputCode = ACCESS_CODE_INPUT.value.trim().toUpperCase();
-            if (!inputCode) {
-                showAlert("Vui lòng nhập Mã Truy Cập.");
-                return;
-            }
-
-            // 1. Check Admin Code (case-insensitive and comparison against loaded code)
-            const storedAdminCode = localStorage.getItem(ADMIN_CODE_STORAGE_KEY);
-            if (inputCode === storedAdminCode) {
-                localStorage.setItem('authenticatedAccessCode', inputCode);
-                showScreen(ADMIN_SCREEN);
-                renderAdminScreen();
-                return;
-            }
-
-            // 2. Check User Access Code in Firestore
-            const accessData = await getAccessCode(inputCode);
-
-            if (accessData) {
-                if (accessData.is_locked) {
-                    showAlert("Mã truy cập này đã bị khóa. Vui lòng liên hệ quản trị viên.");
-                    return;
-                }
-
-                // Successful user login
-                localStorage.setItem('authenticatedAccessCode', inputCode);
-                updateAccessCodeLastLogin(inputCode);
-                renderAppScreen(accessData);
-                showScreen(APP_SCREEN);
-            } else {
-                showAlert("Mã Truy Cập không hợp lệ.");
-            }
-        }
-        
-        async function handleLogout() {
-            try {
-                localStorage.removeItem('authenticatedAccessCode');
-                await signOut(auth); // Sign out the Firebase user
-                ACCESS_CODE_INPUT.value = '';
-                showScreen(LOGIN_SCREEN);
-                // Re-authenticate anonymously for next login attempt
-                await authenticate();
-            } catch (error) {
-                console.error("Logout Error:", error);
-                showAlert("Lỗi đăng xuất. Vui lòng thử lại.");
-            }
-        }
-
-        // --- MUSIC PLAYER COMPONENT (Standalone, no external dependencies) ---
-        class MusicPlayer {
-            constructor(config) {
-                this.moduleId = config.label;
-                this.maxTracks = config.maxTracks;
-                this.bgColor = config.bgColor;
-                this.tracks = new Array(this.maxTracks + 1).fill(false); // Index 0 unused
-            }
-
-            // Function to simulate playing/pausing a track (can be implemented later)
-            playTrack(trackNumber) {
-                showAlert(`Đang phát Nhạc: ${this.moduleId} - Track ${trackNumber}`);
-            }
-
-            // Function to render the player controls (simplified for this task)
-            render() {
-                const playerDiv = document.createElement('div');
-                playerDiv.className = `p-4 rounded-xl shadow-lg ${this.bgColor} transform hover:scale-[1.01] transition-transform duration-200`;
-                playerDiv.innerHTML = `
-                    <h2 class="text-xl font-bold text-white mb-4">${this.moduleId} - ${this.maxTracks} Tracks</h2>
-                    <div id="track-grid-${this.moduleId.replace(/\s/g, '-')}" class="grid grid-cols-5 sm:grid-cols-10 gap-2">
-                    </div>
-                `;
-
-                // Render track buttons
-                const TRACK_GRID = playerDiv.querySelector(`#track-grid-${this.moduleId.replace(/\s/g, '-')}`);
-                let html = '';
-                for (let i = 1; i <= this.maxTracks; i++) {
-                    const isDisabled = false; // Add logic to check for unlock later
-                    const bgColor = this.bgColor.replace('-600', '-700');
-                    // IMPORTANT: The button must call the global function 'playTrackWrapper'
-                    html += `
-                        <button onclick="window.playTrackWrapper('${this.moduleId}', ${i})"
-                            class="w-full aspect-square text-xs font-bold text-white rounded-lg transition-colors duration-150 ${bgColor} ${isDisabled ? 'opacity-50 cursor-not-allowed' : ''}"
-                            ${isDisabled ? 'disabled' : ''}>
-                            ${i}
-                        </button>
-                    `;
-                }
-                TRACK_GRID.innerHTML = html;
-                return playerDiv;
-            }
-        }
-
-        // Global wrapper function for playTrack
-        function playTrackWrapper(moduleId, trackNumber) {
-            if (window.playerInstances && window.playerInstances[moduleId]) {
-                window.playerInstances[moduleId].playTrack(trackNumber);
-            }
-        }
-        window.playTrackWrapper = playTrackWrapper;
-
-
-        // --- RENDERING SCREENS ---
-
-        function renderAppScreen(accessData) {
-            const moduleId = accessData.assigned_module;
-            const config = MODULE_CONFIGS[moduleId];
-            if (!config) {
-                PLAYER_CONTAINER.innerHTML = `<p class="text-red-400">Lỗi: Module ${moduleId} không tồn tại.</p>`;
-                return;
-            }
-
-            // Clear previous players
-            PLAYER_CONTAINER.innerHTML = '';
-            
-            // Render the player instance for the assigned module
-            window.playerInstances = window.playerInstances || {}; // Ensure it exists
-            const playerInstance = new MusicPlayer(config);
-            window.playerInstances[config.label] = playerInstance;
-            PLAYER_CONTAINER.appendChild(playerInstance.render());
-
-            // Update user info
-            ACTIVE_USER_INFO.textContent = `Mã: ${accessData.id} | Module: ${config.label}`;
-        }
-
-        // --- ADMIN SCREEN LOGIC AND RENDERING ---
-
-        async function fetchAllAccessCodes() {
-            try {
-                const q = collection(db, ACCESS_CODE_COLLECTION_PATH);
-                const querySnapshot = await getDocs(q);
-                allAccessCodes = [];
-                querySnapshot.forEach((doc) => {
-                    allAccessCodes.push({ id: doc.id, ...doc.data() });
-                });
-                renderAccessCodeList();
-            } catch (error) {
-                console.error("Error fetching access codes:", error);
-                showAlert("Lỗi tải danh sách mã truy cập.");
-            }
-        }
-
-        function renderAccessCodeList() {
-            MODULE_GRID_CONTAINER.innerHTML = '';
-            
-            // Sort by assigned_module then by ID
-            allAccessCodes.sort((a, b) => {
-                if (a.assigned_module < b.assigned_module) return -1;
-                if (a.assigned_module > b.assigned_module) return 1;
-                return a.id.localeCompare(b.id);
-            });
-
-            const html = allAccessCodes.map(code => {
-                const config = MODULE_CONFIGS[code.assigned_module] || { label: 'Unknown', bgColor: 'bg-gray-500' };
-                const lockClass = code.is_locked ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600';
-                const lockText = code.is_locked ? 'Khóa' : 'Hoạt động';
-
-                return `
-                    <div class="flex items-center justify-between p-3 mb-2 bg-gray-700 rounded-lg shadow-md text-white">
-                        <div class="flex-1 min-w-0">
-                            <p class="font-bold text-lg">${code.id}</p>
-                            <p class="text-sm text-gray-300">Module: ${config.label} (${code.assigned_module})</p>
-                            <p class="text-xs text-gray-400">Đăng nhập cuối: ${code.last_login ? new Date(code.last_login).toLocaleString() : 'Chưa từng'}</p>
-                        </div>
-                        <div class="flex space-x-2 ml-4">
-                            <button onclick="window.editCode('${code.id}')" class="px-3 py-1 text-sm bg-blue-500 hover:bg-blue-600 rounded-md transition duration-150">
-                                Sửa
-                            </button>
-                            <button onclick="window.toggleLockStatus('${code.id}', ${code.is_locked})" class="px-3 py-1 text-sm ${lockClass} rounded-md transition duration-150">
-                                ${lockText}
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-
-            MODULE_GRID_CONTAINER.innerHTML = html;
-        }
-
-        function renderAdminScreen() {
-            // Load list when entering admin screen
-            fetchAllAccessCodes();
-        }
-
-        // --- ADMIN ACTION HANDLERS ---
-        
-        function openAddCodeModal() {
-            currentlyEditingCode = null;
-            document.getElementById('editCodeModalTitle').textContent = 'Thêm Mã Truy Cập Mới';
-            document.getElementById('editCodeIdInput').value = '';
-            document.getElementById('editCodeModuleSelect').value = 'A';
-            document.getElementById('editCodeIsLockedCheckbox').checked = false;
-            document.getElementById('editCodeIdInput').disabled = false; // Enable ID input for adding
-            document.getElementById('editCodeModal').classList.remove('hidden');
-        }
-        window.openAddCodeModal = openAddCodeModal;
-
-        function editCode(codeId) {
-            const codeData = allAccessCodes.find(c => c.id === codeId);
-            if (!codeData) return;
-
-            currentlyEditingCode = codeId;
-            document.getElementById('editCodeModalTitle').textContent = `Sửa Mã: ${codeId}`;
-            document.getElementById('editCodeIdInput').value = codeId;
-            document.getElementById('editCodeModuleSelect').value = codeData.assigned_module;
-            document.getElementById('editCodeIsLockedCheckbox').checked = codeData.is_locked;
-            document.getElementById('editCodeIdInput').disabled = true; // Disable ID input when editing
-            document.getElementById('editCodeModal').classList.remove('hidden');
-        }
-        window.editCode = editCode;
-
-
-        function closeEditCodeModal() {
-            document.getElementById('editCodeModal').classList.add('hidden');
-        }
-        window.closeEditCodeModal = closeEditCodeModal;
-        
-        async function saveAccessCode() {
-            if (isSaving) return;
-            isSaving = true;
-
-            const codeId = document.getElementById('editCodeIdInput').value.trim().toUpperCase();
-            const module = document.getElementById('editCodeModuleSelect').value;
-            const isLocked = document.getElementById('editCodeIsLockedCheckbox').checked;
-
-            if (!codeId || !module) {
-                showAlert("Vui lòng nhập Mã và chọn Module.");
-                isSaving = false;
-                return;
-            }
-
-            try {
-                if (currentlyEditingCode) {
-                    // Update existing
-                    await updateDoc(doc(db, ACCESS_CODE_COLLECTION_PATH, currentlyEditingCode), {
-                        assigned_module: module,
-                        is_locked: isLocked
-                    });
-                    showAlert(`Đã cập nhật mã ${codeId} thành công!`);
-                } else {
-                    // Add new
-                    const existing = await getAccessCode(codeId);
-                    if (existing) {
-                        showAlert(`Lỗi: Mã ${codeId} đã tồn tại!`);
-                        isSaving = false;
-                        return;
-                    }
-
-                    await setDoc(doc(db, ACCESS_CODE_COLLECTION_PATH, codeId), {
-                        assigned_device_id: "",
-                        assigned_module: module,
-                        is_locked: isLocked,
-                        created_at: Date.now(),
-                        last_login: null
-                    });
-                    showAlert(`Đã thêm mã ${codeId} thành công!`);
-                }
-
-                closeEditCodeModal();
-                fetchAllAccessCodes(); // Refresh list
-            } catch (error) {
-                console.error("Error saving code:", error);
-                showAlert(`Lỗi khi lưu mã: ${error.message}`);
-            } finally {
-                isSaving = false;
-            }
-        }
-        window.saveAccessCode = saveAccessCode;
-
-
-        async function toggleLockStatus(codeId, currentStatus) {
-            try {
-                await updateDoc(doc(db, ACCESS_CODE_COLLECTION_PATH, codeId), {
-                    is_locked: !currentStatus
-                });
-                showAlert(`Đã chuyển trạng thái mã ${codeId} thành ${!currentStatus ? 'KHÓA' : 'HOẠT ĐỘNG'}.`);
-                fetchAllAccessCodes(); // Refresh list
-            } catch (error) {
-                console.error("Error toggling lock status:", error);
-                showAlert(`Lỗi khi chuyển trạng thái khóa: ${error.message}`);
-            }
-        }
-        window.toggleLockStatus = toggleLockStatus;
-
-
-        // --- APPLICATION INITIALIZATION ---
-
-        function initAppLogic() {
-            // Tải mã admin lần đầu
-            getAdminCodeFromFirestore();
-
-            // Sửa lỗi: Gán handleLogin và handleLogout vào window để HTML có thể gọi
-            window.handleLogin = handleLogin;
-            window.handleLogout = handleLogout;
-
-            // Kiểm tra trạng thái đăng nhập tự động (sử dụng localStorage)
-            const savedCode = localStorage.getItem('authenticatedAccessCode');
-            if (savedCode) {
-                ACCESS_CODE_INPUT.value = savedCode;
-                handleLogin();
-            } else {
-                LOGIN_SCREEN.classList.remove('hidden');
-            }
-        }
-
-        window.initAppLogic = initAppLogic;
-       
-        // Bắt đầu quá trình xác thực khi Firebase đã load xong
-        window.onload = window.authenticate;
-
-
-    </script>
     <style>
         /* Custom styles for better aesthetics */
         body {
@@ -502,11 +55,11 @@
         <div id="loginScreen" class="hidden w-full max-w-md p-8 card rounded-2xl shadow-xl">
             <h2 class="text-2xl font-bold mb-6 text-center text-gray-200">Mã Truy Cập</h2>
             <p class="text-gray-400 mb-6 text-center">Vui lòng nhập Mã Truy Cập duy nhất của bạn để bắt đầu.</p>
-            
+
             <input type="text" id="accessCodeInput" placeholder="Nhập Mã truy cập (ADMIN123 hoặc USER001)"
                    class="w-full p-3 mb-6 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:ring-green-500 focus:border-green-500 transition duration-150 uppercase" />
-            
-            <button onclick="handleLogin()" 
+
+            <button onclick="handleLogin()"
                     class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl shadow-lg transition duration-200 transform hover:scale-[1.01]">
                 Xác Nhận & Bắt Đầu
             </button>
@@ -525,7 +78,7 @@
                     </button>
                 </div>
             </div>
-            
+
             <div id="playerContainer" class="space-y-6">
                 <!-- Music Player Component will be rendered here -->
             </div>
@@ -554,7 +107,7 @@
     <div id="editCodeModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
         <div class="bg-gray-800 p-6 rounded-xl shadow-2xl max-w-lg w-full text-white border border-gray-700">
             <h3 id="editCodeModalTitle" class="text-xl font-bold mb-4 border-b border-gray-700 pb-2"></h3>
-            
+
             <div class="space-y-4">
                 <div>
                     <label for="editCodeIdInput" class="block text-sm font-medium mb-1 text-gray-300">Mã Truy Cập (ID)</label>
@@ -588,5 +141,404 @@
         </div>
     </div>
 
+    <!-- ----- Firebase & App Logic ----- -->
+    <script type="module">
+    // To ensure DOM is fully loaded, the script is placed at the end of body.
+    // All references to elements are now guaranteed to be non-null
+    // unless you have deleted them from HTML.
+
+    // --- GLOBAL SETUP (Constants and Config) ---
+    const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+    const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const ACCESS_CODE_COLLECTION_PATH = `artifacts/${appId}/public/data/access_codes`;
+    const ADMIN_CODE_PATH = `artifacts/${appId}/public/data/admin_settings/master`;
+    const MODULE_CONFIGS = {
+        'A': { label: 'Module 1', maxTracks: 20, bgColor: 'bg-indigo-600' },
+        'B': { label: 'Module 2', maxTracks: 20, bgColor: 'bg-purple-600' },
+        'C': { label: 'Module 3', maxTracks: 20, bgColor: 'bg-pink-600' },
+        'D': { label: 'Module 4', maxTracks: 20, bgColor: 'bg-red-600' }
+    };
+    const ADMIN_CODE_STORAGE_KEY = 'adminCode';
+
+    // --- FIREBASE IMPORTS ---
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken, setPersistence, browserLocalPersistence, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, getDoc, setDoc, runTransaction, updateDoc, collection, getDocs, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // --- DOM Elements ---
+    const ALERT_MODAL = document.getElementById('customModal');
+    const ALERT_MESSAGE = document.getElementById('alertMessage');
+    const LOGIN_SCREEN = document.getElementById('loginScreen');
+    const APP_SCREEN = document.getElementById('appScreen');
+    const ACCESS_CODE_INPUT = document.getElementById('accessCodeInput');
+    const LOGOUT_BUTTON = document.getElementById('logoutButton');
+    const ACTIVE_USER_INFO = document.getElementById('activeUserInfo');
+    const PLAYER_CONTAINER = document.getElementById('playerContainer');
+    const ADMIN_BUTTON = document.getElementById('adminButton');
+    const ADMIN_SCREEN = document.getElementById('adminScreen');
+    const MODULE_GRID_CONTAINER = document.getElementById('moduleGridContainer');
+
+    // State for Admin Interface
+    let allAccessCodes = [];
+    let currentlyEditingCode = null;
+    let isSaving = false;
+    let app, db, auth, adminCode = null, currentUser;
+
+    // --- UTILITY FUNCTIONS ---
+    function showAlert(message) {
+        if(ALERT_MESSAGE && ALERT_MODAL) {
+            ALERT_MESSAGE.textContent = message;
+            ALERT_MODAL.classList.remove('hidden');
+        } else {
+            alert(message);
+        }
+    }
+    function closeAlert() {
+        if(ALERT_MODAL) ALERT_MODAL.classList.add('hidden');
+    }
+    window.closeAlert = closeAlert;
+
+    function showScreen(screen) {
+        if(LOGIN_SCREEN) LOGIN_SCREEN.classList.add('hidden');
+        if(APP_SCREEN) APP_SCREEN.classList.add('hidden');
+        if(ADMIN_SCREEN) ADMIN_SCREEN.classList.add('hidden');
+        if(screen) screen.classList.remove('hidden');
+    }
+
+    // --- FIREBASE INITIALIZATION & AUTHENTICATION ---
+
+    async function authenticate() {
+        try {
+            // Initialize Firebase
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+            setLogLevel('error');
+            await setPersistence(auth, browserLocalPersistence);
+
+            if (initialAuthToken) {
+                await signInWithCustomToken(auth, initialAuthToken);
+            } else {
+                await signInAnonymously(auth);
+            }
+
+            currentUser = auth.currentUser;
+            console.log(`Firebase authenticated. UID: ${currentUser ? currentUser.uid : 'N/A'}`);
+
+            window.initAppLogic?.();
+        } catch (error) {
+            console.error("Firebase Auth Error:", error);
+            showAlert(`Lỗi kết nối Firebase: ${error.message || error}. Vui lòng kiểm tra console.`);
+        }
+    }
+    window.authenticate = authenticate;
+
+    // --- FIREBASE DATA FUNCTIONS ---
+
+    async function getAdminCodeFromFirestore() {
+        try {
+            const docRef = doc(db, ADMIN_CODE_PATH);
+            const docSnap = await getDoc(docRef);
+
+            if (docSnap.exists()) {
+                adminCode = docSnap.data().code;
+                localStorage.setItem(ADMIN_CODE_STORAGE_KEY, adminCode);
+                console.log("Admin code loaded successfully.");
+            } else {
+                showAlert("Không tìm thấy mã admin trong Firestore. Vui lòng tạo Document: artifacts/gu_gem_player/public/data/admin_settings/master");
+            }
+        } catch (error) {
+            console.error("Error fetching admin code:", error);
+            showAlert(`Lỗi khi tải mã admin: ${error.message}`);
+        }
+    }
+
+    async function getAccessCode(code) {
+        const docRef = doc(db, ACCESS_CODE_COLLECTION_PATH, code.toUpperCase());
+        const docSnap = await getDoc(docRef);
+        if (!docSnap.exists()) {
+            return null;
+        }
+        return { id: docSnap.id, ...docSnap.data() };
+    }
+
+    async function updateAccessCodeLastLogin(codeId) {
+        try {
+            const docRef = doc(db, ACCESS_CODE_COLLECTION_PATH, codeId);
+            await updateDoc(docRef, { last_login: Date.now() });
+        } catch (error) {
+            console.warn("Could not update last_login timestamp:", error);
+        }
+    }
+
+    // --- LOGIN/LOGOUT LOGIC ---
+    async function handleLogin() {
+        const inputCode = ACCESS_CODE_INPUT?.value?.trim().toUpperCase();
+        if (!inputCode) {
+            showAlert("Vui lòng nhập Mã Truy Cập.");
+            return;
+        }
+
+        const storedAdminCode = localStorage.getItem(ADMIN_CODE_STORAGE_KEY);
+        if (inputCode === storedAdminCode) {
+            localStorage.setItem('authenticatedAccessCode', inputCode);
+            showScreen(ADMIN_SCREEN);
+            renderAdminScreen();
+            return;
+        }
+
+        const accessData = await getAccessCode(inputCode);
+
+        if (accessData) {
+            if (accessData.is_locked) {
+                showAlert("Mã truy cập này đã bị khóa. Vui lòng liên hệ quản trị viên.");
+                return;
+            }
+            localStorage.setItem('authenticatedAccessCode', inputCode);
+            updateAccessCodeLastLogin(inputCode);
+            renderAppScreen(accessData);
+            showScreen(APP_SCREEN);
+        } else {
+            showAlert("Mã Truy Cập không hợp lệ.");
+        }
+    }
+
+    async function handleLogout() {
+        try {
+            localStorage.removeItem('authenticatedAccessCode');
+            await signOut(auth);
+            if (ACCESS_CODE_INPUT) ACCESS_CODE_INPUT.value = '';
+            showScreen(LOGIN_SCREEN);
+            await authenticate();
+        } catch (error) {
+            console.error("Logout Error:", error);
+            showAlert("Lỗi đăng xuất. Vui lòng thử lại.");
+        }
+    }
+
+    // --- MUSIC PLAYER COMPONENT ---
+    class MusicPlayer {
+        constructor(config) {
+            this.moduleId = config.label;
+            this.maxTracks = config.maxTracks;
+            this.bgColor = config.bgColor;
+            this.tracks = new Array(this.maxTracks + 1).fill(false);
+        }
+        playTrack(trackNumber) {
+            showAlert(`Đang phát Nhạc: ${this.moduleId} - Track ${trackNumber}`);
+        }
+        render() {
+            const playerDiv = document.createElement('div');
+            playerDiv.className = `p-4 rounded-xl shadow-lg ${this.bgColor} transform hover:scale-[1.01] transition-transform duration-200`;
+            playerDiv.innerHTML = `
+                <h2 class="text-xl font-bold text-white mb-4">${this.moduleId} - ${this.maxTracks} Tracks</h2>
+                <div id="track-grid-${this.moduleId.replace(/\s/g, '-')}" class="grid grid-cols-5 sm:grid-cols-10 gap-2"></div>
+            `;
+            const TRACK_GRID = playerDiv.querySelector(`#track-grid-${this.moduleId.replace(/\s/g, '-')}`);
+            let html = '';
+            for (let i = 1; i <= this.maxTracks; i++) {
+                const isDisabled = false;
+                const bgColor = this.bgColor.replace('-600', '-700');
+                html += `
+                    <button onclick="window.playTrackWrapper('${this.moduleId}', ${i})"
+                        class="w-full aspect-square text-xs font-bold text-white rounded-lg transition-colors duration-150 ${bgColor} ${isDisabled ? 'opacity-50 cursor-not-allowed' : ''}"
+                        ${isDisabled ? 'disabled' : ''}>
+                        ${i}
+                    </button>
+                `;
+            }
+            if(TRACK_GRID) TRACK_GRID.innerHTML = html;
+            return playerDiv;
+        }
+    }
+    // Global wrapper for MusicPlayer play
+    function playTrackWrapper(moduleId, trackNumber) {
+        if (window.playerInstances && window.playerInstances[moduleId]) {
+            window.playerInstances[moduleId].playTrack(trackNumber);
+        }
+    }
+    window.playTrackWrapper = playTrackWrapper;
+
+    // --- RENDERING SCREENS ---
+    function renderAppScreen(accessData) {
+        const moduleId = accessData.assigned_module;
+        const config = MODULE_CONFIGS[moduleId];
+        if (!config) {
+            PLAYER_CONTAINER.innerHTML = `<p class="text-red-400">Lỗi: Module ${moduleId} không tồn tại.</p>`;
+            return;
+        }
+        PLAYER_CONTAINER.innerHTML = '';
+        window.playerInstances = window.playerInstances || {};
+        const playerInstance = new MusicPlayer(config);
+        window.playerInstances[config.label] = playerInstance;
+        PLAYER_CONTAINER.appendChild(playerInstance.render());
+        if (ACTIVE_USER_INFO) ACTIVE_USER_INFO.textContent = `Mã: ${accessData.id} | Module: ${config.label}`;
+    }
+
+    // --- ADMIN SCREEN LOGIC AND RENDERING ---
+    async function fetchAllAccessCodes() {
+        try {
+            const q = collection(db, ACCESS_CODE_COLLECTION_PATH);
+            const querySnapshot = await getDocs(q);
+            allAccessCodes = [];
+            querySnapshot.forEach((doc) => {
+                allAccessCodes.push({ id: doc.id, ...doc.data() });
+            });
+            renderAccessCodeList();
+        } catch (error) {
+            console.error("Error fetching access codes:", error);
+            showAlert("Lỗi tải danh sách mã truy cập.");
+        }
+    }
+
+    function renderAccessCodeList() {
+        MODULE_GRID_CONTAINER.innerHTML = '';
+        allAccessCodes.sort((a, b) => {
+            if (a.assigned_module < b.assigned_module) return -1;
+            if (a.assigned_module > b.assigned_module) return 1;
+            return a.id.localeCompare(b.id);
+        });
+        const html = allAccessCodes.map(code => {
+            const config = MODULE_CONFIGS[code.assigned_module] || { label: 'Unknown', bgColor: 'bg-gray-500' };
+            const lockClass = code.is_locked ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600';
+            const lockText = code.is_locked ? 'Khóa' : 'Hoạt động';
+            return `
+                <div class="flex items-center justify-between p-3 mb-2 bg-gray-700 rounded-lg shadow-md text-white">
+                    <div class="flex-1 min-w-0">
+                        <p class="font-bold text-lg">${code.id}</p>
+                        <p class="text-sm text-gray-300">Module: ${config.label} (${code.assigned_module})</p>
+                        <p class="text-xs text-gray-400">Đăng nhập cuối: ${code.last_login ? new Date(code.last_login).toLocaleString() : 'Chưa từng'}</p>
+                    </div>
+                    <div class="flex space-x-2 ml-4">
+                        <button onclick="window.editCode('${code.id}')" class="px-3 py-1 text-sm bg-blue-500 hover:bg-blue-600 rounded-md transition duration-150">
+                            Sửa
+                        </button>
+                        <button onclick="window.toggleLockStatus('${code.id}', ${code.is_locked})" class="px-3 py-1 text-sm ${lockClass} rounded-md transition duration-150">
+                            ${lockText}
+                        </button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+        MODULE_GRID_CONTAINER.innerHTML = html;
+    }
+
+    function renderAdminScreen() {
+        fetchAllAccessCodes();
+    }
+
+    // --- ADMIN ACTION HANDLERS ---
+    function openAddCodeModal() {
+        currentlyEditingCode = null;
+        document.getElementById('editCodeModalTitle').textContent = 'Thêm Mã Truy Cập Mới';
+        document.getElementById('editCodeIdInput').value = '';
+        document.getElementById('editCodeModuleSelect').value = 'A';
+        document.getElementById('editCodeIsLockedCheckbox').checked = false;
+        document.getElementById('editCodeIdInput').disabled = false;
+        document.getElementById('editCodeModal').classList.remove('hidden');
+    }
+    window.openAddCodeModal = openAddCodeModal;
+
+    function editCode(codeId) {
+        const codeData = allAccessCodes.find(c => c.id === codeId);
+        if (!codeData) return;
+        currentlyEditingCode = codeId;
+        document.getElementById('editCodeModalTitle').textContent = `Sửa Mã: ${codeId}`;
+        document.getElementById('editCodeIdInput').value = codeId;
+        document.getElementById('editCodeModuleSelect').value = codeData.assigned_module;
+        document.getElementById('editCodeIsLockedCheckbox').checked = codeData.is_locked;
+        document.getElementById('editCodeIdInput').disabled = true;
+        document.getElementById('editCodeModal').classList.remove('hidden');
+    }
+    window.editCode = editCode;
+
+    function closeEditCodeModal() {
+        document.getElementById('editCodeModal').classList.add('hidden');
+    }
+    window.closeEditCodeModal = closeEditCodeModal;
+
+    async function saveAccessCode() {
+        if (isSaving) return;
+        isSaving = true;
+        const codeId = document.getElementById('editCodeIdInput').value.trim().toUpperCase();
+        const module = document.getElementById('editCodeModuleSelect').value;
+        const isLocked = document.getElementById('editCodeIsLockedCheckbox').checked;
+
+        if (!codeId || !module) {
+            showAlert("Vui lòng nhập Mã và chọn Module.");
+            isSaving = false;
+            return;
+        }
+
+        try {
+            if (currentlyEditingCode) {
+                await updateDoc(doc(db, ACCESS_CODE_COLLECTION_PATH, currentlyEditingCode), {
+                    assigned_module: module,
+                    is_locked: isLocked
+                });
+                showAlert(`Đã cập nhật mã ${codeId} thành công!`);
+            } else {
+                const existing = await getAccessCode(codeId);
+                if (existing) {
+                    showAlert(`Lỗi: Mã ${codeId} đã tồn tại!`);
+                    isSaving = false;
+                    return;
+                }
+                await setDoc(doc(db, ACCESS_CODE_COLLECTION_PATH, codeId), {
+                    assigned_device_id: "",
+                    assigned_module: module,
+                    is_locked: isLocked,
+                    created_at: Date.now(),
+                    last_login: null
+                });
+                showAlert(`Đã thêm mã ${codeId} thành công!`);
+            }
+            closeEditCodeModal();
+            fetchAllAccessCodes();
+        } catch (error) {
+            console.error("Error saving code:", error);
+            showAlert(`Lỗi khi lưu mã: ${error.message}`);
+        } finally {
+            isSaving = false;
+        }
+    }
+    window.saveAccessCode = saveAccessCode;
+
+    async function toggleLockStatus(codeId, currentStatus) {
+        try {
+            await updateDoc(doc(db, ACCESS_CODE_COLLECTION_PATH, codeId), {
+                is_locked: !currentStatus
+            });
+            showAlert(`Đã chuyển trạng thái mã ${codeId} thành ${!currentStatus ? 'KHÓA' : 'HOẠT ĐỘNG'}.`);
+            fetchAllAccessCodes();
+        } catch (error) {
+            console.error("Error toggling lock status:", error);
+            showAlert(`Lỗi khi chuyển trạng thái khóa: ${error.message}`);
+        }
+    }
+    window.toggleLockStatus = toggleLockStatus;
+
+    // --- APPLICATION INITIALIZATION ---
+    function initAppLogic() {
+        getAdminCodeFromFirestore();
+        window.handleLogin = handleLogin;
+        window.handleLogout = handleLogout;
+        const savedCode = localStorage.getItem('authenticatedAccessCode');
+        if (savedCode) {
+            ACCESS_CODE_INPUT.value = savedCode;
+            handleLogin();
+        } else {
+            LOGIN_SCREEN.classList.remove('hidden');
+        }
+    }
+    window.initAppLogic = initAppLogic;
+
+    // Đảm bảo chỉ gọi authenticate sau khi window load xong
+    window.addEventListener('load', function() {
+        window.authenticate();
+    });
+
+    </script>
 </body>
 </html>
